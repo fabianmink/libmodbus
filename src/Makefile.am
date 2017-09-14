@@ -17,6 +17,9 @@ libmodbus_la_SOURCES = \
         modbus-rtu.c \
         modbus-rtu.h \
         modbus-rtu-private.h \
+        modbus-rtu_over_tcp.c \
+        modbus-rtu_over_tcp.h \
+        modbus-rtu_over_tcp-private.h \
         modbus-tcp.c \
         modbus-tcp.h \
         modbus-tcp-private.h \

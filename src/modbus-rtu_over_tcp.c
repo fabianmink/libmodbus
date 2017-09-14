@@ -79,6 +79,95 @@ static int _modbus_rtu_over_tcp_init_win32(void)
 #endif
 
 
+static int _modbus_tcp_set_ipv4_options(int s)
+{
+    int rc;
+    int option;
+
+    /* Set the TCP no delay flag */
+    /* SOL_TCP = IPPROTO_TCP */
+    option = 1;
+    rc = setsockopt(s, IPPROTO_TCP, TCP_NODELAY,
+                    (const void *)&option, sizeof(int));
+    if (rc == -1) {
+        return -1;
+    }
+
+    /* If the OS does not offer SOCK_NONBLOCK, fall back to setting FIONBIO to
+     * make sockets non-blocking */
+    /* Do not care about the return value, this is optional */
+#if !defined(SOCK_NONBLOCK) && defined(FIONBIO)
+#ifdef OS_WIN32
+    {
+        /* Setting FIONBIO expects an unsigned long according to MSDN */
+        u_long loption = 1;
+        ioctlsocket(s, FIONBIO, &loption);
+    }
+#else
+    option = 1;
+    ioctl(s, FIONBIO, &option);
+#endif
+#endif
+
+#ifndef OS_WIN32
+    /**
+     * Cygwin defines IPTOS_LOWDELAY but can't handle that flag so it's
+     * necessary to workaround that problem.
+     **/
+    /* Set the IP low delay option */
+    option = IPTOS_LOWDELAY;
+    rc = setsockopt(s, IPPROTO_IP, IP_TOS,
+                    (const void *)&option, sizeof(int));
+    if (rc == -1) {
+        return -1;
+    }
+#endif
+
+    return 0;
+}
+
+static int _connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen,
+                    const struct timeval *ro_tv)
+{
+    int rc = connect(sockfd, addr, addrlen);
+
+#ifdef OS_WIN32
+    int wsaError = 0;
+    if (rc == -1) {
+        wsaError = WSAGetLastError();
+    }
+
+    if (wsaError == WSAEWOULDBLOCK || wsaError == WSAEINPROGRESS) {
+#else
+    if (rc == -1 && errno == EINPROGRESS) {
+#endif
+        fd_set wset;
+        int optval;
+        socklen_t optlen = sizeof(optval);
+        struct timeval tv = *ro_tv;
+
+        /* Wait to be available in writing */
+        FD_ZERO(&wset);
+        FD_SET(sockfd, &wset);
+        rc = select(sockfd + 1, NULL, &wset, NULL, &tv);
+        if (rc <= 0) {
+            /* Timeout or fail */
+            return -1;
+        }
+
+        /* The connection is established if SO_ERROR and optval are set to 0 */
+        rc = getsockopt(sockfd, SOL_SOCKET, SO_ERROR, (void *)&optval, &optlen);
+        if (rc == 0 && optval == 0) {
+            return 0;
+        } else {
+            errno = ECONNREFUSED;
+            return -1;
+        }
+    }
+    return rc;
+}
+
+
 /* Table of CRC values for high-order byte */
 static const uint8_t table_crc_hi[] = {
     0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0,
@@ -493,7 +582,7 @@ MODBUS_API modbus_t* modbus_new_rtu_over_tcp(const char *ip, int port)
         errno = ENOMEM;
         return NULL;
     }
-    ctx_rtu = (modbus_rtu_t *)ctx->backend_data;
+    ctx_rtu = (modbus_rtu_over_tcp_t *)ctx->backend_data;
 
     if (ip != NULL) {
         dest_size = sizeof(char) * 16;
