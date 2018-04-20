@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <string.h>
 #include <stdio.h>
 #include <curl/curl.h>
 #include <modbus/modbus.h>
@@ -55,6 +56,19 @@
 #define REG_POWER_L2  0x5B18
 #define REG_POWER_L3  0x5B1A
 
+#define REG_REACTIVEPOWER_TOTAL  0x5B1C
+#define REG_REACTIVEPOWER_L1  0x5B1E
+#define REG_REACTIVEPOWER_L2  0x5B20
+#define REG_REACTIVEPOWER_L3  0x5B22
+
+#define REG_APPARENTPOWER_TOTAL  0x5B24
+#define REG_APPARENTPOWER_L1  0x5B26
+#define REG_APPARENTPOWER_L2  0x5B28
+#define REG_APPARENTPOWER_L3  0x5B2A
+
+#define REG_FREQUENCY 0x5B2C
+
+
 static int reg2val(uint16_t* reg, int length){
 	int val = 0;
 	int i;
@@ -76,26 +90,40 @@ int main (int argc, char **argv)
 	curl = curl_easy_init();
 	if(!curl) exit(-1);
 
-	curl_easy_setopt(curl, CURLOPT_URL, "http://192.168.3.71:8086/write?db=mytest");
+	curl_easy_setopt(curl, CURLOPT_URL, "http://localhost:8086/write?db=homales_db");
+
+	printf("Hello, B23 Energy Meter\n");
    
  	modbus_t *mb;
 	int ret;
 
-	mb = modbus_new_rtu_over_tcp("192.168.3.60", 1234);
+	while(1){
+
+	mb = modbus_new_rtu_over_tcp("192.168.39.73", 1234);
 	modbus_connect(mb);
 	modbus_set_slave(mb, 1);
+
+	//printf("after connect\n");
 
 	while(1){
 		int voltage_L1, voltage_L2, voltage_L3;
 		int voltage_L12, voltage_L23, voltage_L31;
 		int current_L1, current_L2, current_L3;
 		int power_total, power_L1, power_L2, power_L3;
+		int reactive_power, apparent_power;
 		int energy_L1, energy_L2, energy_L3;
+		int frequency;
 
-		uint16_t tab_reg[100];
-		ret = modbus_read_registers(mb, REG_VOLTAGE_L1, REG_POWER_L3-REG_VOLTAGE_L1+2, tab_reg);
+		uint16_t tab_reg[1000];
+		//ret = modbus_read_registers(mb, REG_VOLTAGE_L1, REG_POWER_L3-REG_VOLTAGE_L1+2, tab_reg);
+		ret = modbus_read_registers(mb, REG_VOLTAGE_L1, REG_FREQUENCY-REG_VOLTAGE_L1+2, tab_reg);
+		//printf("after read\n");
 
-		if(ret != -1){
+		//printf("ret: %d\n",ret);
+
+		if(ret == -1) break;
+
+		
 			voltage_L1 = reg2val(&(tab_reg[REG_VOLTAGE_L1-REG_VOLTAGE_L1]),2);
 			voltage_L2 = reg2val(&(tab_reg[REG_VOLTAGE_L2-REG_VOLTAGE_L1]),2);
 			voltage_L3 = reg2val(&(tab_reg[REG_VOLTAGE_L3-REG_VOLTAGE_L1]),2);
@@ -112,10 +140,16 @@ int main (int argc, char **argv)
 			power_L1 = reg2val(&(tab_reg[REG_POWER_L1-REG_VOLTAGE_L1]),2);
 			power_L2 = reg2val(&(tab_reg[REG_POWER_L2-REG_VOLTAGE_L1]),2);
 			power_L3 = reg2val(&(tab_reg[REG_POWER_L3-REG_VOLTAGE_L1]),2);
+
+			reactive_power = reg2val(&(tab_reg[REG_REACTIVEPOWER_TOTAL-REG_VOLTAGE_L1]),2);
+			apparent_power = reg2val(&(tab_reg[REG_APPARENTPOWER_TOTAL-REG_VOLTAGE_L1]),2);
 		
+			frequency = reg2val(&(tab_reg[REG_FREQUENCY-REG_VOLTAGE_L1]),1);
+
 			ret = modbus_read_registers(mb, REG_IMPORT_L1, REG_IMPORT_L3-REG_IMPORT_L1+4, tab_reg);
 
-			if(ret != -1){
+		if(ret == -1) break;
+
 				energy_L1 = reg2val(&(tab_reg[REG_IMPORT_L1-REG_IMPORT_L1]),4);
 				energy_L2 = reg2val(&(tab_reg[REG_IMPORT_L2-REG_IMPORT_L1]),4);
 				energy_L3 = reg2val(&(tab_reg[REG_IMPORT_L3-REG_IMPORT_L1]),4);
@@ -136,19 +170,39 @@ int main (int argc, char **argv)
 				printf("P1 = %f W\n",power_L1*0.01);
 				printf("P2 = %f W\n",power_L2*0.01);
 				printf("P3 = %f W\n",power_L3*0.01);
+
+				printf("Q = %f var\n",reactive_power*0.01);
+				printf("S = %f VA\n",apparent_power*0.01);
+
+				printf("f = %f Hz\n",frequency*0.01);
 		
 				printf("E1 = %f kWh\n",energy_L1*0.01);
 				printf("E2 = %f kWh\n",energy_L2*0.01);
 				printf("E3 = %f kWh\n",energy_L3*0.01);
-			}
-		}
+			
+		
+			char myline[10000];
+			char mycurrent[1000];
+			char myvoltage[1000];
+			char mypower[1000];
+			char myapparentpower[1000];
+			char myfrequency[1000];
+			snprintf(myline, 1000, "b23_energy_meter ");
+			snprintf(mycurrent, 1000, "i1=%f,i2=%f,i3=%f,", current_L1*0.01, current_L2*0.01, current_L3*0.01);
+			snprintf(myvoltage, 1000, "u1=%f,u2=%f,u3=%f,", voltage_L1*0.1, voltage_L2*0.1, voltage_L3*0.1);
+			snprintf(mypower, 1000, "p1=%f,p2=%f,p3=%f,ps=%f,", power_L1*0.01, power_L2*0.01, power_L3*0.01, power_total*0.01);
+			snprintf(myapparentpower, 1000, "qs=%f,ss=%f,", reactive_power*0.01, apparent_power*0.01);
+			snprintf(myfrequency, 1000, "f=%f", frequency*0.01);
+			
+			strncat ( myline, mycurrent, 1000 );
+			strncat ( myline, myvoltage, 1000 );
+			strncat ( myline, mypower, 1000 );
+			strncat ( myline, myapparentpower, 1000 );
+			strncat ( myline, myfrequency, 1000 );
 
-		if(ret != -1){
-			char mywrite[1000];
-			snprintf(mywrite, 1000, "b23 i1=%f,i2=%f,i3=%f", current_L1*0.01, current_L2*0.01, current_L3*0.01);
-			curl_easy_setopt(curl, CURLOPT_POSTFIELDS, mywrite);
+			curl_easy_setopt(curl, CURLOPT_POSTFIELDS, myline);
 			res = curl_easy_perform(curl);
-		}
+		
 
 		sleep(1);
 
@@ -156,6 +210,10 @@ int main (int argc, char **argv)
 
 	modbus_close(mb);
 	modbus_free(mb);
+
+	}
+
+
 }
 
 
